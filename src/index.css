@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+:root {
+  font-family: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  /* 40〜60代向けデフォルト: やや大きめの基本サイズ */
+  font-size: 16px;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: #fafafa;
+  color: #1a1a1a;
+}
+
+/* テレプロンプター専用スクロールアニメーション — Phase D で利用 */
+@keyframes teleprompter-scroll {
+  from { transform: translateY(0); }
+  to { transform: translateY(calc(-100% + 100vh)); }
+}
