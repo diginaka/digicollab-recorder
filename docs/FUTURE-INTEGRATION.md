@@ -156,19 +156,108 @@ Deno.serve(async (req) => {
 
 ---
 
-## 3. その他の将来課題(サマリー)
+## 3. 録画ビットレート / ファイルサイズ最適化
+
+### 現状(Phase 1)
+
+`src/lib/recorder.ts` 内の `VideoRecorder` クラスは以下の MediaRecorder オプションで録画:
+
+```ts
+videoBitsPerSecond: 2_500_000   // 2.5 Mbps
+mimeType: 'video/webm;codecs=vp9,opus' (優先) / 'video/webm;codecs=vp8,opus' / 'video/webm'
+// audioBitsPerSecond は未指定(ブラウザ既定、通常 128-192 kbps)
+// video constraints: { width: { ideal: 1280 }, height: { ideal: 720 } } ideal 指定のみ
+```
+
+### 実測
+
+**観測**: 録画動画のファイルサイズが **約 1 MB/秒(9 Mbps 相当)** と、標準的な 720p 動画(0.3〜0.6 MB/秒)の 1.5〜3 倍。
+
+**原因の推定**: `ideal` constraint 指定だけではブラウザがネイティブ解像度(1080p / 1440p 等)のまま録画する場合があり、2.5 Mbps 上限と噛み合わず高ビットレート記録となっている可能性。
+
+### Phase 1 では最適化しない判断
+
+- 短尺録画(数秒〜数分)では絶対サイズが小さく、ユーザー影響なし
+- 40〜60 代向けは**画質優先**(粗い動画は離脱要因)
+- Bunny Stream 課金(ストレージ + 転送)は現在のボリュームで無視可能
+- 実運用データが集まってから閾値を決める方が合理的
+
+### Phase 2 以降の最適化候補
+
+#### 候補 A: MediaRecorder ビットレート強化
+
+```ts
+new MediaRecorder(stream, {
+  mimeType,
+  videoBitsPerSecond: 1_500_000,  // 1.5 Mbps (Zoom / Meet 相当)
+  audioBitsPerSecond: 128_000,    // 128 kbps (音声明示指定)
+})
+```
+
+- 長所: サイズを半分以下に、画質は会議動画として実用十分
+- 短所: 細かいテキストや資料映像だと若干ぼやける
+
+#### 候補 B: 解像度の明示的な上限指定
+
+```ts
+getUserMedia({
+  video: {
+    width: { ideal: 1280, max: 1280 },
+    height: { ideal: 720, max: 720 },
+    frameRate: { ideal: 30, max: 30 },
+    facingMode: 'user',
+  },
+  audio: true,
+})
+```
+
+- 長所: 高解像カメラ(Mac の FaceTime HD 等)でも 720p に確実に下げられる
+- 短所: 一部デバイスで `max` 指定が効かない場合あり(フォールバック済)
+
+#### 候補 C: Bunny Stream 側の出力解像度制限
+
+Bunny Stream Library 設定で **max 720p 出力に制限**。アップロード後のエンコード時に Bunny が自動ダウンスケール。
+
+- 長所: クライアント改修不要
+- 短所: アップロード元のサイズは変わらない(帯域節約にならない)
+
+#### 候補 D: 長時間録画時のサイズ監視 / 警告
+
+```ts
+// 30 分以上 or 500 MB 以上で警告表示
+if (elapsedMs > 30 * 60 * 1000 || recordedBlob.size > 500 * 1024 * 1024) {
+  showWarning('長時間の録画は通信量が増えます。一度停止してアップロードすることをおすすめします。')
+}
+```
+
+- 長所: ユーザーが自発的に分割録画を選択できる
+- 短所: UX 上で「警告」出現 → 心理的負担
+
+### 判断タイミング
+
+Phase 1.5 または Phase 2 の**長時間録画テスト**(30 分超の録画を 3〜5 件)で以下を測定し、閾値判断:
+
+- 平均ビットレート(Mbps)
+- 1 時間録画時のファイルサイズ(MB)
+- Bunny Stream 転送コスト影響(月次ストレージ + GB 転送の実績)
+
+この数値が出たら候補 A(ビットレート)+ 候補 B(解像度上限)を優先採用。候補 C は Bunny プラン変更時の検討、候補 D は候補 A + B で解決しない場合の UI 側対応。
+
+---
+
+## 4. その他の将来課題(サマリー)
 
 ### セッションポーリング活性化
 
 [src/lib/digicollabSso.ts](../src/lib/digicollabSso.ts) に `startSessionPolling` を実装済みだが App.tsx から未使用。長時間録画中(30分〜)のセッション期限切れを検知する目的で、**Phase 1.5** で有効化を検討。
 
-### HLS 再生のフォールバック
+### HLS 再生フォールバック(現状 iframe 埋め込みで解決)
 
-Library は現在 `mp4_url`(Bunny Direct Play)を直接 `<video>` に渡しているが、Bunny が将来 Direct Play を無効化した場合に備えて [hls.js](https://github.com/video-dev/hls.js) 組み込みを検討。現状は Bunny 側の Direct Play 有効を前提とする運用。
+Phase E で Library は Bunny 公式の `iframe.mediadelivery.net` 埋め込みに切替済。Direct Play が無効化された場合でも iframe プレーヤー側で自動的に HLS を選択するため、クライアント側の hls.js 組み込みは不要。将来 iframe からカスタム UI に戻す場合は [hls.js](https://github.com/video-dev/hls.js) を検討。
 
 ### モバイル端末で録画後のファイルサイズ上限
 
-iOS Safari / Android Chrome では MediaRecorder が長時間録画で **数百 MB のメモリ**を消費する。UI 側で 10 分以上の録画は警告表示するオプションを Phase F 実機テスト後に検討。
+iOS Safari / Android Chrome では MediaRecorder が長時間録画で **数百 MB のメモリ**を消費する。UI 側で 10 分以上の録画は警告表示するオプションを Phase F 実機テスト後に検討。→ § 3 の候補 D と統合して実装予定。
 
 ### Phase V1/V2 TTS 戦略との統合
 
@@ -179,3 +268,4 @@ Phase V1/V2 は Gemini 3.1 Flash TTS を採用(別チャットで確定)。recor
 ## 変更ログ
 
 - 2026-04-23: 初版作成(Phase G デプロイ準備で生成)
+- 2026-04-23: § 3 録画ビットレート最適化を追加(実測約 1 MB/秒の観察結果と候補 4 点)。HLS フォールバック項目を iframe 採用反映で更新
