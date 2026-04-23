@@ -49,7 +49,10 @@ create policy "users manage own recordings" on public.fb_recordings
 -- 4. updated_at trigger -------------------------------------------------------
 
 create or replace function public.set_updated_at()
-returns trigger language plpgsql as $$
+returns trigger
+language plpgsql
+set search_path = ''  -- advisor: prevent mutable search_path injection
+as $$
 begin
   new.updated_at = now();
   return new;
