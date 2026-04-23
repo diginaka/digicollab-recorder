@@ -1,6 +1,8 @@
 // fb-ai-script-generate — record.digicollabo.com 用 AI 台本生成。
 //
-// 認証: verify_jwt: true (認証ユーザーのみ利用可)
+// 認証: verify_jwt: false + 関数内で手動検証 (Bearer トークンを auth.getUser で検証)
+//       ES256 移行後、ゲートウェイ側 verify_jwt=true は HS256 専用で動作しないため、
+//       自前で検証するパターンに統一 (他子アプリの既存実装に準拠)。
 //
 // リクエスト:
 //   POST /functions/v1/fb-ai-script-generate
@@ -10,10 +12,6 @@
 // レスポンス:
 //   { script: string|null, fallback: boolean }
 //   fallback=true の場合は site_settings.openai_api_key 未設定 (管理者設定待ち)
-//
-// 設計: 既存 generate-script (Course 用 / 60 秒固定 / bonus|idea 2 モード) とは
-//   パラメータが異なるため別関数として実装。OpenAI API キーは site_settings の
-//   共通キー (openai_api_key) を流用する。
 
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
@@ -46,8 +44,26 @@ Deno.serve(async (req: Request) => {
 
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')
+    const anonKey = Deno.env.get('SUPABASE_ANON_KEY')
     const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
-    if (!supabaseUrl || !serviceKey) return json({ error: 'server misconfigured' }, 500)
+    if (!supabaseUrl || !anonKey || !serviceKey) {
+      return json({ error: 'server misconfigured' }, 500)
+    }
+
+    // 手動認証 (ES256/HS256 両対応)
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader?.startsWith('Bearer ')) {
+      return json({ code: 'UNAUTHORIZED_NO_AUTH_HEADER', message: 'Missing Authorization header' }, 401)
+    }
+    const token = authHeader.substring(7)
+    const userClient = createClient(supabaseUrl, anonKey)
+    const {
+      data: { user },
+      error: authErr,
+    } = await userClient.auth.getUser(token)
+    if (authErr || !user) {
+      return json({ code: 'UNAUTHORIZED', message: 'Invalid token' }, 401)
+    }
 
     // site_settings から OpenAI API key を取得 (service role で読む)
     const admin = createClient(supabaseUrl, serviceKey)

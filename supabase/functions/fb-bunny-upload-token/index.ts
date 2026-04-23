@@ -1,7 +1,9 @@
 // fb-bunny-upload-token — 認証ユーザーからの POST で Bunny Stream 動画を作成し、
 // TUS 直アップロード用の認証署名を返す。
 //
-// 認証: verify_jwt: true (Supabase Edge Functions 標準 JWT 検証)
+// 認証: verify_jwt: false + 関数内で手動検証 (Bearer トークンを auth.getUser で検証)
+//       ES256 移行後、ゲートウェイ側 verify_jwt=true は HS256 専用で動作しないため、
+//       自前で検証するパターンに統一 (他子アプリの既存実装に準拠)。
 //
 // リクエスト:
 //   POST /functions/v1/fb-bunny-upload-token
@@ -18,8 +20,6 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// CORS: Supabase JS クライアントが X-Client-Info を必ず送るため、
-// Allow-Headers に含めないと preflight が失敗する。fb-ai-script-generate と同じパターン。
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
@@ -51,9 +51,6 @@ Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS })
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405)
 
-  const authHeader = req.headers.get('Authorization')
-  if (!authHeader) return json({ error: 'unauthorized' }, 401)
-
   const supabaseUrl = Deno.env.get('SUPABASE_URL')
   const anonKey = Deno.env.get('SUPABASE_ANON_KEY')
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
@@ -64,15 +61,20 @@ Deno.serve(async (req) => {
     return json({ error: 'server misconfigured' }, 500)
   }
 
-  // 認証ユーザー取得
-  const userClient = createClient(supabaseUrl, anonKey, {
-    global: { headers: { Authorization: authHeader } },
-  })
+  // 手動認証 (ES256/HS256 両対応)
+  const authHeader = req.headers.get('Authorization')
+  if (!authHeader?.startsWith('Bearer ')) {
+    return json({ code: 'UNAUTHORIZED_NO_AUTH_HEADER', message: 'Missing Authorization header' }, 401)
+  }
+  const token = authHeader.substring(7)
+  const userClient = createClient(supabaseUrl, anonKey)
   const {
     data: { user },
-    error: userErr,
-  } = await userClient.auth.getUser()
-  if (userErr || !user) return json({ error: 'unauthorized' }, 401)
+    error: authErr,
+  } = await userClient.auth.getUser(token)
+  if (authErr || !user) {
+    return json({ code: 'UNAUTHORIZED', message: 'Invalid token' }, 401)
+  }
 
   // 入力
   let body: CreateBody

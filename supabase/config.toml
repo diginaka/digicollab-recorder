@@ -2,11 +2,14 @@
 # プロジェクト ID: whpqheywobndaeaikchh
 project_id = "whpqheywobndaeaikchh"
 
+# 注: verify_jwt=true はゲートウェイ側で HS256 のみ検証できる。
+# プロジェクトが ES256 へ移行したため、認証の必要な関数は
+# verify_jwt=false にして関数内で supabase.auth.getUser(token) により検証する。
 [functions.fb-bunny-upload-token]
-verify_jwt = true
+verify_jwt = false
 
 [functions.fb-bunny-webhook]
 verify_jwt = false
 
 [functions.fb-ai-script-generate]
-verify_jwt = true
+verify_jwt = false
