@@ -36,4 +36,6 @@ export interface Recording {
   updated_at: string
 }
 
-export type AppId = 'course' | 'sales' | 'webinar' | 'thanks' | 'line' | 'email'
+// fb_scripts.source_app CHECK 制約と同期:
+// course / sales / webinar / thanks / line / email / standalone
+export type AppId = 'course' | 'sales' | 'webinar' | 'thanks' | 'line' | 'email' | 'standalone'

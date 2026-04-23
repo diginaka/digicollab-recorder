@@ -1,0 +1,9 @@
+# Supabase config for record.digicollabo.com (記録用のみ、実際の deploy は MCP 経由)
+# プロジェクト ID: whpqheywobndaeaikchh
+project_id = "whpqheywobndaeaikchh"
+
+[functions.fb-bunny-upload-token]
+verify_jwt = true
+
+[functions.fb-bunny-webhook]
+verify_jwt = false
