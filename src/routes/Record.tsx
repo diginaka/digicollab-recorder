@@ -10,8 +10,9 @@ import {
   Square,
   Loader2,
   RefreshCw,
-  Upload,
+  Upload as UploadIcon,
   CheckCircle2,
+  X,
 } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { Teleprompter } from '../components/Teleprompter'
@@ -19,9 +20,20 @@ import { VideoRecorder } from '../lib/recorder'
 import { useDeviceCapability } from '../hooks/useDeviceCapability'
 import { useLaunchParams } from '../hooks/useLaunchParams'
 import { getScript } from '../lib/scriptsApi'
-import type { Script, RecordingMode } from '../types'
+import { startUpload, type UploadHandle } from '../lib/bunnyUpload'
+import { waitForRecordingReady } from '../lib/recordingsApi'
+import type { Recording, Script, RecordingMode, AppId } from '../types'
 
-type Phase = 'select' | 'preparing' | 'ready' | 'countdown' | 'recording' | 'preview'
+type Phase =
+  | 'select'
+  | 'preparing'
+  | 'ready'
+  | 'countdown'
+  | 'recording'
+  | 'preview'
+  | 'uploading'
+  | 'processing'
+  | 'done'
 
 function formatElapsed(ms: number): string {
   const sec = Math.max(0, Math.floor(ms / 1000))
@@ -47,6 +59,16 @@ function friendlyErrorMessage(e: unknown, mode: RecordingMode): string {
   return '準備に失敗しました。しばらくしてからもう一度お試しください。'
 }
 
+function defaultRecordingTitle(script: Script | null): string {
+  if (script?.title) return script.title
+  const d = new Date()
+  const mm = (d.getMonth() + 1).toString().padStart(2, '0')
+  const dd = d.getDate().toString().padStart(2, '0')
+  const hh = d.getHours().toString().padStart(2, '0')
+  const mi = d.getMinutes().toString().padStart(2, '0')
+  return `録画 ${mm}/${dd} ${hh}:${mi}`
+}
+
 export default function Record() {
   const device = useDeviceCapability()
   const launch = useLaunchParams()
@@ -64,9 +86,14 @@ export default function Record() {
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null)
   const [promptPlayTrigger, setPromptPlayTrigger] = useState(0)
 
+  const [uploadPercent, setUploadPercent] = useState(0)
+  const [readyRecording, setReadyRecording] = useState<Recording | null>(null)
+
   const recorderRef = useRef<VideoRecorder | null>(null)
   const livePreviewRef = useRef<HTMLVideoElement>(null)
   const startTimeRef = useRef<number>(0)
+  const uploadHandleRef = useRef<UploadHandle | null>(null)
+  const processingAbortRef = useRef<AbortController | null>(null)
 
   // 台本ロード
   useEffect(() => {
@@ -87,24 +114,30 @@ export default function Record() {
     }
   }, [launch.scriptId])
 
-  // unmount 時に stream を破棄
+  // unmount 時に stream / upload を破棄
   useEffect(() => {
     return () => {
       recorderRef.current?.cancel()
       recorderRef.current = null
+      uploadHandleRef.current?.abort().catch(() => {})
+      processingAbortRef.current?.abort()
     }
   }, [])
 
-  // 録画用 URL の revoke
   useEffect(() => {
     return () => {
       if (recordedUrl) URL.revokeObjectURL(recordedUrl)
     }
   }, [recordedUrl])
 
-  // ページ離脱警告(カウントダウン + 録画中)
+  // ページ離脱警告(録画 + アップロード + 処理待ち中)
   useEffect(() => {
-    if (phase !== 'countdown' && phase !== 'recording') return
+    const guarded =
+      phase === 'countdown' ||
+      phase === 'recording' ||
+      phase === 'uploading' ||
+      phase === 'processing'
+    if (!guarded) return
     const handler = (e: BeforeUnloadEvent) => {
       e.preventDefault()
       e.returnValue = ''
@@ -135,26 +168,23 @@ export default function Record() {
     }
   }, [phase])
 
-  const handleSelectMode = useCallback(
-    async (m: RecordingMode) => {
-      setError(null)
-      setMode(m)
-      setPhase('preparing')
-      const rec = new VideoRecorder()
-      recorderRef.current = rec
-      try {
-        if (m === 'screen') await rec.startScreen()
-        else await rec.startSelfie()
-        setPhase('ready')
-      } catch (e) {
-        recorderRef.current = null
-        setMode(null)
-        setPhase('select')
-        setError(friendlyErrorMessage(e, m))
-      }
-    },
-    [],
-  )
+  const handleSelectMode = useCallback(async (m: RecordingMode) => {
+    setError(null)
+    setMode(m)
+    setPhase('preparing')
+    const rec = new VideoRecorder()
+    recorderRef.current = rec
+    try {
+      if (m === 'screen') await rec.startScreen()
+      else await rec.startSelfie()
+      setPhase('ready')
+    } catch (e) {
+      recorderRef.current = null
+      setMode(null)
+      setPhase('select')
+      setError(friendlyErrorMessage(e, m))
+    }
+  }, [])
 
   const handleStartRecording = useCallback(() => {
     const rec = recorderRef.current
@@ -173,7 +203,6 @@ export default function Record() {
           startTimeRef.current = Date.now()
           setElapsedMs(0)
           setPhase('recording')
-          // テレプロンプター自動再生(新しいトリガー値で発火)
           setPromptPlayTrigger((x) => x + 1)
         } catch {
           setError('録画の開始に失敗しました。もう一度お試しください。')
@@ -205,12 +234,16 @@ export default function Record() {
     setMode(null)
     setError(null)
     setElapsedMs(0)
+    setReadyRecording(null)
+    setUploadPercent(0)
     setPhase('select')
   }, [recordedUrl])
 
   const handleBack = useCallback(() => {
     recorderRef.current?.cancel()
     recorderRef.current = null
+    uploadHandleRef.current?.abort().catch(() => {})
+    processingAbortRef.current?.abort()
     if (launch.returnTo) {
       try {
         window.location.href = decodeURIComponent(launch.returnTo)
@@ -222,13 +255,114 @@ export default function Record() {
     navigate('/')
   }, [launch.returnTo, navigate])
 
+  const redirectAfterReady = useCallback(
+    (ready: Recording) => {
+      if (launch.returnTo) {
+        try {
+          const url = new URL(decodeURIComponent(launch.returnTo))
+          if (ready.public_url) url.searchParams.set('video_url', ready.public_url)
+          if (ready.mp4_url) url.searchParams.set('video_mp4', ready.mp4_url)
+          url.searchParams.set('recording_id', ready.id)
+          if (launch.sourceRef) url.searchParams.set('source_ref', launch.sourceRef)
+          window.location.href = url.toString()
+          return
+        } catch {
+          /* fall through */
+        }
+      }
+      navigate('/library')
+    },
+    [launch.returnTo, launch.sourceRef, navigate],
+  )
+
+  const handleUpload = useCallback(async () => {
+    if (!recordedBlob || !mode) return
+    setError(null)
+    setUploadPercent(0)
+    setPhase('uploading')
+
+    const appId = launch.appId as AppId | null
+    const handle = startUpload(
+      recordedBlob,
+      {
+        title: defaultRecordingTitle(script),
+        mode,
+        script_id: script?.id ?? null,
+        source_app: appId,
+        source_ref: launch.sourceRef,
+      },
+      (pct) => setUploadPercent(pct),
+    )
+    uploadHandleRef.current = handle
+
+    try {
+      const { recordingId } = await handle.promise
+      uploadHandleRef.current = null
+
+      // TUS 完了 -> 処理待ち
+      setPhase('processing')
+      const ctrl = new AbortController()
+      processingAbortRef.current = ctrl
+      const ready = await waitForRecordingReady(recordingId, {
+        signal: ctrl.signal,
+        intervalMs: 3000,
+        timeoutMs: 10 * 60_000,
+      })
+      processingAbortRef.current = null
+
+      if (ready.status === 'error') {
+        setError(
+          `動画の処理中にエラーが発生しました。${
+            ready.error_message ? `(${ready.error_message})` : ''
+          }`,
+        )
+        setPhase('preview')
+        return
+      }
+
+      setReadyRecording(ready)
+      setPhase('done')
+      window.setTimeout(() => redirectAfterReady(ready), 1800)
+    } catch (e) {
+      uploadHandleRef.current = null
+      processingAbortRef.current = null
+      const msg = e instanceof Error ? e.message : 'アップロードに失敗しました'
+      if (/中断|Aborted/i.test(msg) || (e instanceof DOMException && e.name === 'AbortError')) {
+        setPhase('preview')
+        return
+      }
+      setError(msg)
+      setPhase('preview')
+    }
+  }, [recordedBlob, mode, script, launch.appId, launch.sourceRef, redirectAfterReady])
+
+  const handleCancelUpload = useCallback(async () => {
+    const h = uploadHandleRef.current
+    if (h) {
+      try {
+        await h.abort()
+      } catch {
+        /* noop */
+      }
+      uploadHandleRef.current = null
+    }
+    processingAbortRef.current?.abort()
+    processingAbortRef.current = null
+  }, [])
+
   const scriptText = script?.content ?? ''
   const isSelfieLike = mode === 'selfie' || mode === 'selfie_mobile'
+
+  const backButtonShown =
+    phase !== 'recording' &&
+    phase !== 'countdown' &&
+    phase !== 'uploading' &&
+    phase !== 'processing'
 
   return (
     <Layout>
       <div className="px-4 sm:px-6 py-5 max-w-5xl mx-auto w-full">
-        {phase !== 'recording' && phase !== 'countdown' && (
+        {backButtonShown && (
           <button
             onClick={handleBack}
             className="inline-flex items-center text-sm text-emerald-700 hover:underline mb-3"
@@ -314,10 +448,7 @@ export default function Record() {
         {(phase === 'ready' || phase === 'countdown' || phase === 'recording') && (
           <div className="flex flex-col gap-4">
             <div className="h-[55vh] min-h-[320px]">
-              <Teleprompter
-                text={scriptText}
-                playTrigger={promptPlayTrigger}
-              />
+              <Teleprompter text={scriptText} playTrigger={promptPlayTrigger} />
             </div>
 
             <div className="flex flex-col lg:flex-row gap-4">
@@ -375,7 +506,8 @@ export default function Record() {
                       停止する
                     </button>
                     <p className="text-sm text-gray-600 lg:text-center">
-                      経過: <span className="font-mono font-bold">{formatElapsed(elapsedMs)}</span>
+                      経過:{' '}
+                      <span className="font-mono font-bold">{formatElapsed(elapsedMs)}</span>
                     </p>
                   </>
                 )}
@@ -403,22 +535,24 @@ export default function Record() {
 
             <div className="rounded-lg bg-gray-50 border border-gray-200 p-3 mb-5 text-sm text-gray-700">
               <p>
-                ファイルサイズ: 約 {recordedBlob ? Math.round(recordedBlob.size / 1024 / 1024 * 10) / 10 : 0} MB
+                ファイルサイズ: 約{' '}
+                {recordedBlob
+                  ? Math.round((recordedBlob.size / 1024 / 1024) * 10) / 10
+                  : 0}{' '}
+                MB
               </p>
               <p className="text-xs text-gray-500 mt-0.5">
-                ※ アップロードはまだ始まっていません。「アップロード」ボタンで動画サーバーに保存されます。
+                ※「アップロードする」を押すと、動画がサーバーに保存されます。
               </p>
             </div>
 
             <div className="flex flex-col sm:flex-row gap-3">
               <button
-                disabled
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold opacity-50 cursor-not-allowed"
-                title="Phase E で実装予定"
+                onClick={handleUpload}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition shadow-sm"
               >
-                <Upload className="w-5 h-5" />
+                <UploadIcon className="w-5 h-5" />
                 アップロードする
-                <span className="ml-1 text-xs bg-white/20 px-2 py-0.5 rounded">準備中</span>
               </button>
               <button
                 onClick={handleRedo}
@@ -434,6 +568,99 @@ export default function Record() {
                 あとで
               </Link>
             </div>
+          </div>
+        )}
+
+        {/* === Phase: uploading === */}
+        {phase === 'uploading' && (
+          <div className="py-10 max-w-xl mx-auto text-center">
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2 inline-flex items-center gap-2">
+              <UploadIcon className="w-6 h-6 text-emerald-600" />
+              アップロード中
+            </h2>
+            <p className="text-sm text-gray-600 mb-6">
+              動画をサーバーに送っています。このページを閉じないでください。
+            </p>
+
+            <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+              <div className="flex items-end justify-between mb-2">
+                <span className="text-sm text-gray-600">進捗</span>
+                <span className="text-3xl sm:text-4xl font-bold font-mono text-emerald-700">
+                  {uploadPercent}
+                  <span className="text-xl">%</span>
+                </span>
+              </div>
+              <div
+                className="w-full bg-gray-200 rounded-full h-4 overflow-hidden"
+                role="progressbar"
+                aria-valuenow={uploadPercent}
+                aria-valuemin={0}
+                aria-valuemax={100}
+              >
+                <div
+                  className="bg-emerald-500 h-full transition-[width] duration-300"
+                  style={{ width: `${uploadPercent}%` }}
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-4">
+                通信が不安定になっても、切れた所から自動で再開します。
+              </p>
+            </div>
+
+            <button
+              onClick={handleCancelUpload}
+              className="mt-5 inline-flex items-center gap-1 px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded"
+            >
+              <X className="w-4 h-4" />
+              中断する
+            </button>
+          </div>
+        )}
+
+        {/* === Phase: processing === */}
+        {phase === 'processing' && (
+          <div className="py-10 max-w-xl mx-auto text-center">
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">
+              動画を準備しています
+            </h2>
+            <p className="text-sm text-gray-600 mb-6">
+              送信が完了しました。再生できる形式に変換しています。少しだけお待ちください。
+            </p>
+            <div className="rounded-xl border border-gray-200 bg-white p-8 shadow-sm">
+              <Loader2 className="w-16 h-16 mx-auto animate-spin text-emerald-600 mb-3" />
+              <p className="text-base text-gray-700">準備中…</p>
+              <p className="text-xs text-gray-500 mt-2">
+                通常は 30 秒〜 2 分で完了します。
+              </p>
+            </div>
+            <p className="mt-4 text-xs text-gray-500">
+              この画面を閉じても、ライブラリから後で確認できます。
+            </p>
+            <Link
+              to="/library"
+              className="mt-3 inline-block text-sm text-emerald-700 hover:underline"
+            >
+              ライブラリへ移動する →
+            </Link>
+          </div>
+        )}
+
+        {/* === Phase: done === */}
+        {phase === 'done' && readyRecording && (
+          <div className="py-10 max-w-xl mx-auto text-center">
+            <CheckCircle2 className="w-20 h-20 mx-auto text-emerald-500 mb-3" />
+            <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">
+              完了しました
+            </h2>
+            <p className="text-sm text-gray-600 mb-6">
+              {launch.returnTo ? '呼び出し元に戻ります...' : 'ライブラリに移動します...'}
+            </p>
+            <button
+              onClick={() => redirectAfterReady(readyRecording)}
+              className="inline-flex items-center gap-2 px-5 py-3 bg-emerald-600 text-white rounded-lg text-base font-medium hover:bg-emerald-700 transition"
+            >
+              いますぐ移動
+            </button>
           </div>
         )}
       </div>
