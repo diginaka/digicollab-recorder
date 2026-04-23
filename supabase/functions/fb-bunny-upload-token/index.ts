@@ -18,9 +18,11 @@
 import 'jsr:@supabase/functions-js/edge-runtime.d.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
+// CORS: Supabase JS クライアントが X-Client-Info を必ず送るため、
+// Allow-Headers に含めないと preflight が失敗する。fb-ai-script-generate と同じパターン。
 const CORS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, apikey, content-type',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
