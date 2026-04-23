@@ -11,16 +11,16 @@ export default function Library() {
           className="inline-flex items-center text-sm text-emerald-700 hover:underline mb-4"
         >
           <ArrowLeft className="w-4 h-4 mr-1" />
-          \u30db\u30fc\u30e0\u3078
+          ホームへ
         </Link>
 
         <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-6 inline-flex items-center gap-2">
           <FolderOpen className="w-7 h-7 text-gray-700" />
-          \u30e9\u30a4\u30d6\u30e9\u30ea
+          ライブラリ
         </h1>
 
         <p className="text-sm text-gray-500">
-          \u9332\u753b\u6e08\u307f\u306e\u52d5\u753b\u304c\u5b89\u9332\u3055\u308c\u307e\u3059 (Phase E \u3067\u5b9f\u88c5)\u3002
+          録画済みの動画が保存されます (Phase E で実装)。
         </p>
       </div>
     </Layout>

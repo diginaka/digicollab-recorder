@@ -18,7 +18,7 @@ export type RecordingStatus = 'uploading' | 'processing' | 'ready' | 'error'
 export interface Recording {
   id: string
   user_id: string
-  /** Phase V1/V2 \u30d1\u30a4\u30d7\u30e9\u30a4\u30f3\u304c\u4f7f\u7528\u3002record Phase 1 \u3067\u306f null \u306e\u307e\u307e */
+  /** Phase V1/V2 パイプラインが使用。record Phase 1 では null のまま */
   business_profile_id: string | null
   script_id: string | null
   title: string | null
@@ -32,7 +32,7 @@ export interface Recording {
   file_size_bytes: number | null
   source_app: string | null
   source_ref: string | null
-  /** Phase V1/V2 \u306e R2 \u30d0\u30c3\u30af\u30a2\u30c3\u30d7\u7528\u3002record Phase 1 \u3067\u306f null */
+  /** Phase V1/V2 の R2 バックアップ用。record Phase 1 では null */
   r2_backup_path: string | null
   status: RecordingStatus
   error_message: string | null

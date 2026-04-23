@@ -31,22 +31,22 @@ export function Layout({ children }: Props) {
       <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center justify-between gap-3">
           <Link to="/" className="text-lg sm:text-xl font-bold text-gray-900 tracking-tight">
-            \u9332\u753b\u30b9\u30bf\u30b8\u30aa
+            録画スタジオ
           </Link>
           <nav className="flex items-center gap-1">
-            {navItem('/', isExact('/'), <HomeIcon className="w-4 h-4" />, '\u30db\u30fc\u30e0')}
+            {navItem('/', isExact('/'), <HomeIcon className="w-4 h-4" />, 'ホーム')}
             {navItem(
               '/script/new',
               startsWith('/script'),
               <FileText className="w-4 h-4" />,
-              '\u53f0\u672c',
+              '台本',
             )}
-            {navItem('/record', startsWith('/record'), <Video className="w-4 h-4" />, '\u9332\u753b')}
+            {navItem('/record', startsWith('/record'), <Video className="w-4 h-4" />, '録画')}
             {navItem(
               '/library',
               startsWith('/library'),
               <FolderOpen className="w-4 h-4" />,
-              '\u30e9\u30a4\u30d6\u30e9\u30ea',
+              'ライブラリ',
             )}
           </nav>
         </div>

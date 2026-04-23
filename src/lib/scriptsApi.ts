@@ -1,6 +1,6 @@
 // fb_scripts CRUD helpers.
-// RLS \u3067 user_id = auth.uid() \u306e\u30ed\u30fc\u306e\u307f\u64cd\u4f5c\u53ef\u80fd\u3002
-// create \u6642\u306f\u660e\u793a\u7684\u306b user_id \u3092\u8a2d\u5b9a (\u30c8\u30ea\u30ac\u30fc\u7121\u3057\u306e\u305f\u3081)\u3002
+// RLS で user_id = auth.uid() のローのみ操作可能。
+// create 時は明示的に user_id を設定 (トリガー無しのため)。
 import { supabase } from './supabase'
 import type { Script, AppId } from '../types'
 
@@ -40,7 +40,7 @@ export async function createScript(input: CreateScriptInput): Promise<Script> {
     data: { user },
     error: authErr,
   } = await sb.auth.getUser()
-  if (authErr || !user) throw new Error('\u8a8d\u8a3c\u30bb\u30c3\u30b7\u30e7\u30f3\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093')
+  if (authErr || !user) throw new Error('認証セッションが見つかりません')
 
   const { data, error } = await sb
     .from('fb_scripts')

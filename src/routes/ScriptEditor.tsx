@@ -52,7 +52,7 @@ export default function ScriptEditor() {
       .then((s) => {
         if (cancelled) return
         if (!s) {
-          setError('\u53f0\u672c\u304c\u898b\u3064\u304b\u308a\u307e\u305b\u3093\u3002\u524a\u9664\u6e08\u307f\u304b\u6a29\u9650\u304c\u3042\u308a\u307e\u305b\u3093\u3002')
+          setError('台本が見つかりません。削除済みか権限がありません。')
         } else {
           setTitle(s.title ?? '')
           setContent(s.content)
@@ -60,7 +60,7 @@ export default function ScriptEditor() {
         }
       })
       .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : '\u8aad\u307f\u8fbc\u307f\u5931\u6557')
+        if (!cancelled) setError(e instanceof Error ? e.message : '読み込み失敗')
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -72,7 +72,7 @@ export default function ScriptEditor() {
 
   const handleSave = async () => {
     if (!content.trim()) {
-      setError('\u53f0\u672c\u306e\u5185\u5bb9\u3092\u5165\u529b\u3057\u3066\u304f\u3060\u3055\u3044')
+      setError('台本の内容を入力してください')
       return
     }
     setSaving(true)
@@ -98,7 +98,7 @@ export default function ScriptEditor() {
         setDirty(false)
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : '\u4fdd\u5b58\u306b\u5931\u6557\u3057\u307e\u3057\u305f')
+      setError(e instanceof Error ? e.message : '保存に失敗しました')
     } finally {
       setSaving(false)
     }
@@ -106,12 +106,12 @@ export default function ScriptEditor() {
 
   const handleDelete = async () => {
     if (!savedId) return
-    if (!window.confirm('\u3053\u306e\u53f0\u672c\u3092\u524a\u9664\u3057\u307e\u3059\u3002\u3088\u308d\u3057\u3044\u3067\u3059\u304b\uff1f')) return
+    if (!window.confirm('この台本を削除します。よろしいですか？')) return
     try {
       await deleteScript(savedId)
       navigate('/')
     } catch (e) {
-      setError(e instanceof Error ? e.message : '\u524a\u9664\u306b\u5931\u6557\u3057\u307e\u3057\u305f')
+      setError(e instanceof Error ? e.message : '削除に失敗しました')
     }
   }
 
@@ -123,11 +123,11 @@ export default function ScriptEditor() {
           className="inline-flex items-center text-sm text-emerald-700 hover:underline mb-4"
         >
           <ArrowLeft className="w-4 h-4 mr-1" />
-          \u30db\u30fc\u30e0\u3078
+          ホームへ
         </Link>
 
         <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-6">
-          {isNew && !savedId ? '\u65b0\u3057\u3044\u53f0\u672c' : '\u53f0\u672c\u306e\u7de8\u96c6'}
+          {isNew && !savedId ? '新しい台本' : '台本の編集'}
         </h1>
 
         {error && (
@@ -137,11 +137,11 @@ export default function ScriptEditor() {
         )}
 
         {loading ? (
-          <p className="text-gray-500">\u8aad\u307f\u8fbc\u307f\u4e2d...</p>
+          <p className="text-gray-500">読み込み中...</p>
         ) : (
           <>
             <label className="block mb-4">
-              <span className="block text-sm font-medium text-gray-700 mb-1">\u30bf\u30a4\u30c8\u30eb</span>
+              <span className="block text-sm font-medium text-gray-700 mb-1">タイトル</span>
               <input
                 type="text"
                 value={title}
@@ -149,21 +149,21 @@ export default function ScriptEditor() {
                   setTitle(e.target.value)
                   setDirty(true)
                 }}
-                placeholder="\u4f8b: \u65b0\u5546\u54c1\u7d39\u4ecb"
+                placeholder="例: 新商品紹介"
                 className="w-full px-4 py-3 text-base border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none"
               />
             </label>
 
             <label className="block mb-5">
               <div className="flex items-center justify-between mb-1">
-                <span className="block text-sm font-medium text-gray-700">\u53f0\u672c\u306e\u5185\u5bb9</span>
+                <span className="block text-sm font-medium text-gray-700">台本の内容</span>
                 <button
                   type="button"
                   onClick={() => setAiOpen(true)}
                   className="inline-flex items-center gap-1 text-sm text-emerald-700 hover:bg-emerald-50 px-2 py-1 rounded transition"
                 >
                   <Sparkles className="w-4 h-4" />
-                  AI \u3067\u4e0b\u66f8\u304d\u3092\u4f5c\u308b
+                  AI で下書きを作る
                 </button>
               </div>
               <textarea
@@ -172,7 +172,7 @@ export default function ScriptEditor() {
                   setContent(e.target.value)
                   setDirty(true)
                 }}
-                placeholder="\u3053\u3053\u306b\u53f0\u672c\u3092\u66f8\u304f\u304b\u3001\u300cAI \u3067\u4e0b\u66f8\u304d\u3092\u4f5c\u308b\u300d\u3067\u81ea\u52d5\u751f\u6210\u3067\u304d\u307e\u3059\u3002"
+                placeholder="ここに台本を書くか、「AI で下書きを作る」で自動生成できます。"
                 rows={16}
                 className="w-full px-4 py-3 text-base border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none resize-y leading-relaxed"
               />
@@ -185,7 +185,7 @@ export default function ScriptEditor() {
                 className="inline-flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-medium hover:bg-emerald-700 disabled:opacity-40 transition shadow-sm"
               >
                 <Save className="w-5 h-5" />
-                {saving ? '\u4fdd\u5b58\u4e2d...' : '\u4fdd\u5b58\u3059\u308b'}
+                {saving ? '保存中...' : '保存する'}
               </button>
               {savedId && (
                 <Link
@@ -193,7 +193,7 @@ export default function ScriptEditor() {
                   className="inline-flex items-center gap-2 px-5 py-3 bg-white border border-gray-300 text-gray-800 rounded-lg text-base font-medium hover:bg-gray-50 transition"
                 >
                   <Video className="w-5 h-5" />
-                  \u3053\u306e\u53f0\u672c\u3067\u9332\u753b
+                  この台本で録画
                 </Link>
               )}
               {savedId && (
@@ -202,14 +202,14 @@ export default function ScriptEditor() {
                   className="ml-auto inline-flex items-center gap-1 px-3 py-2 text-sm text-red-700 hover:bg-red-50 rounded transition"
                 >
                   <Trash2 className="w-4 h-4" />
-                  \u524a\u9664
+                  削除
                 </button>
               )}
             </div>
 
             {dirty && !saving && (
               <p className="mt-3 text-xs text-amber-700">
-                \u203b \u672a\u4fdd\u5b58\u306e\u5909\u66f4\u304c\u3042\u308a\u307e\u3059
+                ※ 未保存の変更があります
               </p>
             )}
           </>
