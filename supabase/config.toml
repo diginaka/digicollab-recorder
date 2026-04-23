@@ -7,3 +7,6 @@ verify_jwt = true
 
 [functions.fb-bunny-webhook]
 verify_jwt = false
+
+[functions.fb-ai-script-generate]
+verify_jwt = true
