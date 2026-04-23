@@ -8,6 +8,8 @@ import {
   AlertCircle,
   Trash2,
   FileVideo,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
 import { Layout } from '../components/Layout'
 import { listRecordings, deleteRecording } from '../lib/recordingsApi'
@@ -66,6 +68,102 @@ function formatDuration(sec: number | null): string | null {
   const mm = Math.floor(sec / 60)
   const ss = Math.floor(sec % 60).toString().padStart(2, '0')
   return `${mm}:${ss}`
+}
+
+interface CardProps {
+  recording: Recording
+  onDelete: (r: Recording) => void
+  deleting: boolean
+}
+
+function RecordingCard({ recording: r, onDelete, deleting }: CardProps) {
+  const [open, setOpen] = useState(false)
+  const canPlay =
+    r.status === 'ready' && !!r.bunny_video_id && !!r.bunny_library_id
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white overflow-hidden">
+      <button
+        type="button"
+        onClick={() => canPlay && setOpen((v) => !v)}
+        disabled={!canPlay}
+        aria-expanded={open}
+        className={[
+          'w-full text-left p-4 transition',
+          canPlay ? 'hover:bg-gray-50 cursor-pointer' : 'cursor-default',
+        ].join(' ')}
+      >
+        <div className="flex gap-3 items-start">
+          {/* サムネイル placeholder (Bunny の直 URL アクセスは Referer 制限で 403 のため、
+              動画アイコンで代替。展開時に iframe プレーヤーで再生) */}
+          <div className="w-24 h-16 rounded bg-gradient-to-br from-emerald-100 to-emerald-200 flex-shrink-0 flex items-center justify-center text-emerald-600">
+            <FileVideo className="w-8 h-8" />
+          </div>
+
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className="font-medium text-gray-900 text-base truncate">
+                {r.title || '無題'}
+              </p>
+              <StatusBadge status={r.status} />
+            </div>
+            <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
+              <span>{formatDateTime(r.created_at)}</span>
+              {formatDuration(r.duration_seconds) && (
+                <span>{formatDuration(r.duration_seconds)}</span>
+              )}
+            </div>
+            {r.status === 'error' && r.error_message && (
+              <p className="text-xs text-red-700 mt-1 line-clamp-2">
+                {r.error_message}
+              </p>
+            )}
+          </div>
+
+          {canPlay && (
+            <span className="text-sm text-emerald-700 font-medium inline-flex items-center gap-0.5 flex-shrink-0 pt-0.5">
+              {open ? (
+                <>
+                  <ChevronUp className="w-4 h-4" />
+                  閉じる
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-4 h-4" />
+                  再生
+                </>
+              )}
+            </span>
+          )}
+        </div>
+      </button>
+
+      {/* 展開時のみ iframe を生成 (未展開では重い player を読み込まない) */}
+      {open && canPlay && (
+        <div className="border-t border-gray-100">
+          <iframe
+            src={`https://iframe.mediadelivery.net/embed/${r.bunny_library_id}/${r.bunny_video_id}?autoplay=false`}
+            loading="lazy"
+            className="block w-full border-0 bg-black"
+            style={{ aspectRatio: '16 / 9' }}
+            allow="accelerometer; gyroscope; autoplay; encrypted-media; picture-in-picture"
+            allowFullScreen
+            title={r.title || '録画'}
+          />
+          <div className="flex items-center justify-end gap-2 p-3 bg-gray-50">
+            <button
+              onClick={() => onDelete(r)}
+              disabled={deleting}
+              className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50 rounded disabled:opacity-50"
+            >
+              <Trash2 className="w-4 h-4" />
+              {deleting ? '削除中...' : '削除'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export default function Library() {
@@ -153,70 +251,11 @@ export default function Library() {
           <ul className="space-y-3">
             {recordings.map((r) => (
               <li key={r.id}>
-                <details className="rounded-xl border border-gray-200 bg-white overflow-hidden group">
-                  <summary className="cursor-pointer p-4 list-none hover:bg-gray-50 transition">
-                    <div className="flex gap-3 items-start">
-                      {r.thumbnail_url ? (
-                        <img
-                          src={r.thumbnail_url}
-                          alt=""
-                          className="w-24 h-16 object-cover rounded flex-shrink-0 bg-gray-100"
-                          loading="lazy"
-                        />
-                      ) : (
-                        <div className="w-24 h-16 rounded bg-gray-100 flex-shrink-0 flex items-center justify-center text-gray-300">
-                          <FileVideo className="w-6 h-6" />
-                        </div>
-                      )}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="font-medium text-gray-900 text-base truncate">
-                            {r.title || '無題'}
-                          </p>
-                          <StatusBadge status={r.status} />
-                        </div>
-                        <div className="flex items-center gap-3 text-xs text-gray-500 mt-1">
-                          <span>{formatDateTime(r.created_at)}</span>
-                          {formatDuration(r.duration_seconds) && (
-                            <span>{formatDuration(r.duration_seconds)}</span>
-                          )}
-                        </div>
-                        {r.status === 'error' && r.error_message && (
-                          <p className="text-xs text-red-700 mt-1 line-clamp-2">
-                            {r.error_message}
-                          </p>
-                        )}
-                      </div>
-                      {r.status === 'ready' && (
-                        <span className="text-xs text-emerald-700 group-open:hidden">
-                          ▼ 再生
-                        </span>
-                      )}
-                    </div>
-                  </summary>
-
-                  {r.status === 'ready' && r.mp4_url && (
-                    <div className="border-t border-gray-100">
-                      <video
-                        className="w-full aspect-video bg-black"
-                        controls
-                        preload="none"
-                        poster={r.thumbnail_url ?? undefined}
-                        src={r.mp4_url}
-                      />
-                      <div className="flex items-center justify-end gap-2 p-3 bg-gray-50">
-                        <button
-                          onClick={() => handleDelete(r)}
-                          disabled={deletingId === r.id}
-                          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50 rounded disabled:opacity-50"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                          {deletingId === r.id ? '削除中...' : '削除'}
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                </details>
+                <RecordingCard
+                  recording={r}
+                  onDelete={handleDelete}
+                  deleting={deletingId === r.id}
+                />
               </li>
             ))}
           </ul>
