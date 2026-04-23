@@ -140,7 +140,9 @@
 3. 3 秒カウントダウン → 10 秒ほど録画 → 「停止する」
 4. 「アップロードする」 → 進捗バー 0→100% → 「準備中」に切り替わる
 5. Webhook 到着(30 秒〜 2 分) → 「完了しました」 → ライブラリに自動遷移
-6. ライブラリで録画が `ready` 状態で表示、`▼ 再生` 展開で再生できる
+6. ライブラリで録画が `ready` 状態で表示、「▼ 再生」展開で動画プレーヤー(iframe 埋め込み)で再生できる
+
+**補足**: ライブラリのサムネイルは動画アイコン固定表示(Bunny の `Block direct url file access` 設定により直 URL サムネイルは Referer チェックで弾かれるため)、プレーヤーは公式 iframe 埋め込み(`iframe.mediadelivery.net`)を利用。Bunny Allowed Domains に `*.digicollabo.com` が含まれているため、本番ドメインから iframe Referer が通ります。
 
 ### 7-5. Bunny ダッシュボード
 1. Bunny Stream → Library 643370 → Videos
@@ -210,6 +212,16 @@ git push origin main
 ### SSO リダイレクトが無限ループする
 - ハブ側の allowed apps リストに `record.digicollabo.com` が登録されていない可能性
 - Phase 1.5 のタスクで登録作業を実施
+
+### ライブラリで「▼ 再生」を押しても iframe プレーヤーが表示されない
+- Bunny Stream → Security → Allowed Domains に `*.digicollabo.com` / `digicollabo.com` が登録されているか確認
+- Cloudflare Pages が `record.digicollabo.com` で SSL Active か確認 (HTTP だと iframe がブロックされる)
+- DevTools → Console で `Refused to frame 'iframe.mediadelivery.net'` 系の CSP エラーが出ていないか確認
+
+### 動画の `status` が `error` のまま、`error_message` に `bunny status X` と表示される
+- Phase E の webhook v4 で解消済みのはずだが、再発する場合は Supabase Edge Functions → `fb-bunny-webhook` → Logs を確認
+- `BUNNY_STREAM_API_KEY` が Supabase Secrets に正しく登録されているか
+- `fb-bunny-webhook` を再デプロイして v5 以降にするか、問題のレコードに対して同関数へ `curl POST {token} {VideoGuid}` を手動発火させて再判定
 
 ---
 
