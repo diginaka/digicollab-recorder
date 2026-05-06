@@ -17,7 +17,35 @@ import { supabase } from './supabase'
 
 const HUB_URL: string = import.meta.env.VITE_AUTH_HUB_URL || 'https://digicollabo.com'
 
+/** iframe 内で実行されているかを判定する（cross-origin で window.top アクセスが投げる場合は true 扱い）。 */
+const isInIframe = (): boolean => {
+  try {
+    return window.self !== window.top
+  } catch {
+    return true
+  }
+}
+
+/**
+ * ハブへリダイレクト（return_toで元URLを引き継ぐ）
+ *
+ * iframe 内で呼ばれた場合: HUB_URL (= digicollabo.com) に遷移すると Flow Builder
+ * 自身が iframe 内に再帰表示されるため、`window.location` 変更はスキップする。
+ * 代わりに親 (Flow Builder) へ postMessage を送り、ユーザ向けの簡素なエラーを
+ * iframe 内に表示する。
+ */
 export function redirectToHub(): void {
+  if (isInIframe()) {
+    try {
+      window.parent.postMessage(
+        { type: 'flowbuilder:sso-failed', origin: window.location.origin },
+        HUB_URL,
+      )
+    } catch { /* noop */ }
+    document.body.innerHTML =
+      '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:system-ui,sans-serif;color:#475569;gap:8px;padding:16px;text-align:center"><div style="font-weight:bold">セッションを確認できませんでした</div><div style="font-size:12px">フロービルダー本体にログインし直して、もう一度お試しください。</div></div>'
+    return
+  }
   const currentUrl = encodeURIComponent(window.location.href)
   window.location.href = `${HUB_URL}?return_to=${currentUrl}`
 }
