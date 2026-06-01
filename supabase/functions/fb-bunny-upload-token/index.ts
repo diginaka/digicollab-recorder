@@ -8,7 +8,9 @@
 // リクエスト:
 //   POST /functions/v1/fb-bunny-upload-token
 //   Headers: Authorization: Bearer <user-jwt>
-//   Body: { title: string, mode: 'selfie'|'screen'|'selfie_mobile', script_id?: uuid|null, source_app?: string|null, source_ref?: uuid|null }
+//   Body: { title: string, mode: 'selfie'|'screen'|'selfie_mobile', script_id?: uuid|null, source_app?: string|null, source_ref?: string|null }
+//   ※ source_ref は source_app ごとに名前空間が異なる不透明な text 識別子（uuid とは限らない）。
+//      source_app とセットで解釈する。例: funnel thanks="step_"+nanoid / course=page_id / funnel sales_lp=uuid。
 //
 // レスポンス:
 //   { recording_id, video_id, library_id, auth_signature, expires, upload_endpoint }
@@ -94,7 +96,33 @@ Deno.serve(async (req) => {
     return json({ error: 'mode must be selfie|screen|selfie_mobile' }, 400)
   }
 
-  // Bunny Stream で動画作成
+  // 孤児動画対策: 「fb_recordings へ先に INSERT → Bunny 動画作成 → guid を UPDATE」の順にする。
+  // Bunny 動画作成より前に INSERT するため、INSERT が失敗しても Bunny 上に孤児動画を残さない。
+  // source_app + source_ref はセットで扱う異種 ID。source_ref は source_app 名前空間の不透明な
+  // text（uuid とは限らない: funnel thanks="step_"+nanoid / course=page_id / funnel sales_lp=uuid）。
+  const admin = createClient(supabaseUrl, serviceKey)
+
+  // 1) 先に行を作成（bunny_video_id は動画作成後に UPDATE する）。service role で RLS bypass。
+  const { data: recording, error: insErr } = await admin
+    .from('fb_recordings')
+    .insert({
+      user_id: user.id,
+      script_id: scriptId,
+      title,
+      mode,
+      bunny_library_id: libraryId,
+      source_app: sourceApp,
+      source_ref: sourceRef,
+      status: 'uploading',
+    })
+    .select('id')
+    .single()
+
+  if (insErr || !recording) {
+    return json({ error: 'db insert failed', detail: insErr?.message }, 500)
+  }
+
+  // 2) Bunny Stream で動画作成。失敗時は作成済みの行を削除して孤児（DB 側）を残さない。
   const createRes = await fetch(
     `https://video.bunnycdn.com/library/${libraryId}/videos`,
     {
@@ -108,36 +136,32 @@ Deno.serve(async (req) => {
   )
   if (!createRes.ok) {
     const detail = await createRes.text().catch(() => '')
+    await admin.from('fb_recordings').delete().eq('id', recording.id)
     return json({ error: `bunny create failed: ${createRes.status}`, detail }, 502)
   }
   const video = (await createRes.json()) as { guid?: string }
-  if (!video.guid) return json({ error: 'bunny returned no guid' }, 502)
+  if (!video.guid) {
+    await admin.from('fb_recordings').delete().eq('id', recording.id)
+    return json({ error: 'bunny returned no guid' }, 502)
+  }
 
-  // TUS 認証署名 (SHA256 hex)
+  // 3) 作成した動画の guid を行へ反映。失敗時は行と Bunny 動画の両方を後始末（孤児防止）。
+  const { error: updErr } = await admin
+    .from('fb_recordings')
+    .update({ bunny_video_id: video.guid })
+    .eq('id', recording.id)
+  if (updErr) {
+    await admin.from('fb_recordings').delete().eq('id', recording.id)
+    await fetch(`https://video.bunnycdn.com/library/${libraryId}/videos/${video.guid}`, {
+      method: 'DELETE',
+      headers: { AccessKey: bunnyApiKey },
+    }).catch(() => {})
+    return json({ error: 'db update failed', detail: updErr.message }, 500)
+  }
+
+  // 4) TUS 認証署名 (SHA256 hex)
   const expires = Math.floor(Date.now() / 1000) + 3600
   const authSignature = await sha256Hex(`${libraryId}${bunnyApiKey}${expires}${video.guid}`)
-
-  // fb_recordings へ INSERT (service role で RLS bypass)
-  const admin = createClient(supabaseUrl, serviceKey)
-  const { data: recording, error: insErr } = await admin
-    .from('fb_recordings')
-    .insert({
-      user_id: user.id,
-      script_id: scriptId,
-      title,
-      mode,
-      bunny_video_id: video.guid,
-      bunny_library_id: libraryId,
-      source_app: sourceApp,
-      source_ref: sourceRef,
-      status: 'uploading',
-    })
-    .select('id')
-    .single()
-
-  if (insErr || !recording) {
-    return json({ error: 'db insert failed', detail: insErr?.message }, 500)
-  }
 
   return json({
     recording_id: recording.id,
