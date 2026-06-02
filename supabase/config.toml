@@ -13,3 +13,8 @@ verify_jwt = false
 
 [functions.fb-ai-script-generate]
 verify_jwt = false
+
+# 取りこぼし回収 EF。verify_jwt=false にして関数内で RECONCILE_TRIGGER_TOKEN を照合する
+# (サービスロールで DB を書き換えるため、トークン無しは拒否)。
+[functions.fb-bunny-reconcile]
+verify_jwt = false
