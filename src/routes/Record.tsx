@@ -64,6 +64,9 @@ const MAX_UPLOAD_RETRIES = 2
 // 各画面の見出し(「アップロードに失敗しました」「アップロードは完了しました」)と
 // 合わせて、依頼書記載の文面そのままになるよう本文側を定義している。
 const UPLOAD_FAILED_MESSAGE = '通信状況をご確認のうえ、もう一度お試しください。'
+// 再送上限に到達した時の文言。アップロード失敗時は動画が使える形で存在しないため、
+// ライブラリ導線は出さず、録り直し/ホームのみに誘導する。
+const UPLOAD_FAILED_FINAL_MESSAGE = '通信環境をご確認のうえ、後ほど録り直してください。'
 const PREPARING_TIMEOUT_NOTICE =
   '動画の準備に少し時間がかかっています。ライブラリで後ほどご確認ください。'
 const PROCESSING_ERROR_NOTICE =
@@ -798,39 +801,49 @@ export default function Record() {
               <X className="w-9 h-9 text-red-500" />
             </div>
             <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">
-              アップロードに失敗しました
+              {canRetryUpload
+                ? 'アップロードに失敗しました'
+                : 'アップロードに繰り返し失敗しました'}
             </h2>
-            <p className="text-base text-gray-700 mb-6">{UPLOAD_FAILED_MESSAGE}</p>
+            <p className="text-base text-gray-700 mb-6">
+              {canRetryUpload ? UPLOAD_FAILED_MESSAGE : UPLOAD_FAILED_FINAL_MESSAGE}
+            </p>
             <div className="flex flex-col sm:flex-row gap-3 justify-center">
               {canRetryUpload ? (
-                <button
-                  onClick={handleUpload}
-                  className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition shadow-sm"
-                >
-                  <UploadIcon className="w-5 h-5" />
-                  もう一度アップロード
-                </button>
+                <>
+                  <button
+                    onClick={handleUpload}
+                    className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition shadow-sm"
+                  >
+                    <UploadIcon className="w-5 h-5" />
+                    もう一度アップロード
+                  </button>
+                  <button
+                    onClick={handleRedo}
+                    className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-gray-300 text-gray-800 rounded-lg text-base font-medium hover:bg-gray-50 transition"
+                  >
+                    <RefreshCw className="w-5 h-5" />
+                    録り直す
+                  </button>
+                </>
               ) : (
-                <button
-                  onClick={() => navigate('/library')}
-                  className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition shadow-sm"
-                >
-                  ライブラリで確認
-                </button>
+                <>
+                  <button
+                    onClick={handleRedo}
+                    className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition shadow-sm"
+                  >
+                    <RefreshCw className="w-5 h-5" />
+                    録り直す
+                  </button>
+                  <button
+                    onClick={() => navigate('/')}
+                    className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-gray-300 text-gray-800 rounded-lg text-base font-medium hover:bg-gray-50 transition"
+                  >
+                    ホーム
+                  </button>
+                </>
               )}
-              <button
-                onClick={handleRedo}
-                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-gray-300 text-gray-800 rounded-lg text-base font-medium hover:bg-gray-50 transition"
-              >
-                <RefreshCw className="w-5 h-5" />
-                録り直す
-              </button>
             </div>
-            {!canRetryUpload && (
-              <p className="mt-4 text-sm text-gray-500">
-                何度かお試しいただけませんでした。少し時間をおいてから、ライブラリでご確認いただくか録り直してください。
-              </p>
-            )}
           </div>
         )}
       </div>
