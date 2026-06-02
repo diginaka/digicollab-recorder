@@ -403,7 +403,6 @@ export default function Record() {
     try {
       const ready = await waitForRecordingReady(recordingId, {
         signal: ctrl.signal,
-        intervalMs: 3000,
         timeoutMs: READY_TIMEOUT_MS,
       })
       processingAbortRef.current = null
