@@ -35,6 +35,21 @@ type Phase =
   | 'processing'
   | 'done'
 
+// ── 0Byte/極小録画ガード ──────────────────────────────────
+// 空・短すぎる録画をアップロード前にフロントで弾くための閾値(調整可)。
+// blob / video の duration メタデータは WebM では不定なため使わず、
+// 録画経過タイマー(startTimeRef からの elapsedMs)で尺を判定する。
+const MIN_BLOB_BYTES = 50_000 // 50KB 未満は空/ヘッダのみとみなす
+const MIN_DURATION_MS = 1500 // 1.5 秒未満は誤操作の即停止とみなす
+
+// 40〜60代向けに簡潔・責めない文言。内部名(Bunny 等)は出さない(白ラベル原則)。
+const EMPTY_RECORDING_MESSAGE =
+  '録画データがありません（または短すぎます）。もう一度録り直してください。'
+
+function isRecordingTooSmall(blobSize: number, elapsedMs: number): boolean {
+  return blobSize < MIN_BLOB_BYTES || elapsedMs < MIN_DURATION_MS
+}
+
 function formatElapsed(ms: number): string {
   const sec = Math.max(0, Math.floor(ms / 1000))
   const mm = Math.floor(sec / 60).toString().padStart(2, '0')
@@ -94,6 +109,8 @@ export default function Record() {
   const startTimeRef = useRef<number>(0)
   const uploadHandleRef = useRef<UploadHandle | null>(null)
   const processingAbortRef = useRef<AbortController | null>(null)
+  // stop 時に実測した録画尺。handleUpload の多重防御で同じガードを再評価するため保持。
+  const lastDurationMsRef = useRef<number>(0)
 
   // 台本ロード
   useEffect(() => {
@@ -215,9 +232,25 @@ export default function Record() {
   const handleStop = useCallback(async () => {
     const rec = recorderRef.current
     if (!rec) return
+    // 経過尺は startTimeRef から実測する。elapsedMs state はこの useCallback
+    // ([] deps)の closure では初期値 0 のままで stale になるため参照しない。
+    const durationMs = Date.now() - startTimeRef.current
     try {
       const blob = await rec.stop()
       recorderRef.current = null
+      // 0Byte/極小ガード: 空・短すぎる録画は preview に進めず録り直しへ戻す。
+      // ここで弾けば Bunny に動画が作られず、トークン EF も呼ばれない。
+      // stop() 済みで stream は破棄済みのため ready ではなく select へ戻す。
+      if (isRecordingTooSmall(blob.size, durationMs)) {
+        lastDurationMsRef.current = 0
+        setRecordedBlob(null)
+        setElapsedMs(0)
+        setMode(null)
+        setError(EMPTY_RECORDING_MESSAGE)
+        setPhase('select')
+        return
+      }
+      lastDurationMsRef.current = durationMs
       const url = URL.createObjectURL(blob)
       setRecordedBlob(blob)
       setRecordedUrl(url)
@@ -277,6 +310,17 @@ export default function Record() {
 
   const handleUpload = useCallback(async () => {
     if (!recordedBlob || !mode) return
+    // 多重防御: stop ガードをすり抜けた空/極小録画を Bunny / トークン EF へ送らない。
+    if (isRecordingTooSmall(recordedBlob.size, lastDurationMsRef.current)) {
+      if (recordedUrl) URL.revokeObjectURL(recordedUrl)
+      setRecordedBlob(null)
+      setRecordedUrl(null)
+      setElapsedMs(0)
+      setMode(null)
+      setError(EMPTY_RECORDING_MESSAGE)
+      setPhase('select')
+      return
+    }
     setError(null)
     setUploadPercent(0)
     setPhase('uploading')
@@ -334,7 +378,7 @@ export default function Record() {
       setError(msg)
       setPhase('preview')
     }
-  }, [recordedBlob, mode, script, launch.appId, launch.sourceRef, redirectAfterReady])
+  }, [recordedBlob, recordedUrl, mode, script, launch.appId, launch.sourceRef, redirectAfterReady])
 
   const handleCancelUpload = useCallback(async () => {
     const h = uploadHandleRef.current
