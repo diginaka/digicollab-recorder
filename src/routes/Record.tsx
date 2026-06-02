@@ -21,7 +21,7 @@ import { useDeviceCapability } from '../hooks/useDeviceCapability'
 import { useLaunchParams } from '../hooks/useLaunchParams'
 import { getScript } from '../lib/scriptsApi'
 import { startUpload, type UploadHandle } from '../lib/bunnyUpload'
-import { waitForRecordingReady } from '../lib/recordingsApi'
+import { waitForRecordingReady, RecordingReadyTimeoutError } from '../lib/recordingsApi'
 import type { Recording, Script, RecordingMode, AppId } from '../types'
 
 type Phase =
@@ -33,6 +33,8 @@ type Phase =
   | 'preview'
   | 'uploading'
   | 'processing'
+  | 'await_library' // 準備待ちタイムアウト / 処理エラーの出口(動画は既にアップ済・再送しない)
+  | 'upload_failed' // アップロード失敗(同じ blob で再送導線)
   | 'done'
 
 // ── 0Byte/極小録画ガード ──────────────────────────────────
@@ -48,6 +50,31 @@ const EMPTY_RECORDING_MESSAGE =
 
 function isRecordingTooSmall(blobSize: number, elapsedMs: number): boolean {
   return blobSize < MIN_BLOB_BYTES || elapsedMs < MIN_DURATION_MS
+}
+
+// ── 準備待ちタイムアウト / 再送ガード ──────────────────────
+// 準備完了をフロントで待つ上限。超過したら「失敗」ではなく「準備中の出口」へ。
+// 行は processing のまま残し、webhook (後続 reconcile) の ready 化に委ねる。
+const READY_TIMEOUT_MS = 150_000 // 2.5 分。調整可
+// アップロード再送の上限。v32 EF は呼ぶ度に新規行+新規動画を作るため、
+// 無制限再送は孤児を量産する。初回 + 2 回 = 計 3 回まで。
+const MAX_UPLOAD_RETRIES = 2
+
+// 白ラベル原則: 内部名 (Bunny / TUS 等) を出さず、40〜60代向けに簡潔・責めない文言。
+// 各画面の見出し(「アップロードに失敗しました」「アップロードは完了しました」)と
+// 合わせて、依頼書記載の文面そのままになるよう本文側を定義している。
+const UPLOAD_FAILED_MESSAGE = '通信状況をご確認のうえ、もう一度お試しください。'
+const PREPARING_TIMEOUT_NOTICE =
+  '動画の準備に少し時間がかかっています。ライブラリで後ほどご確認ください。'
+const PROCESSING_ERROR_NOTICE =
+  '動画の準備中に問題が発生しました。ライブラリで後ほどご確認ください。'
+
+// 中断(キャンセル操作)の検出。準備待ちは DOMException(AbortError)、
+// アップロード中断は Error('…中断しました') で来るため両方を拾う。
+function isAbortError(e: unknown): boolean {
+  if (e instanceof DOMException && e.name === 'AbortError') return true
+  const msg = e instanceof Error ? e.message : ''
+  return /中断|abort/i.test(msg)
 }
 
 function formatElapsed(ms: number): string {
@@ -103,6 +130,10 @@ export default function Record() {
 
   const [uploadPercent, setUploadPercent] = useState(0)
   const [readyRecording, setReadyRecording] = useState<Recording | null>(null)
+  // アップロード失敗の回数(再送上限の判定用)。録り直しでリセット。
+  const [uploadAttempts, setUploadAttempts] = useState(0)
+  // await_library 出口の本文(タイムアウト / 処理エラーで文言が変わる)。
+  const [noticeMessage, setNoticeMessage] = useState<string>('')
 
   const recorderRef = useRef<VideoRecorder | null>(null)
   const livePreviewRef = useRef<HTMLVideoElement>(null)
@@ -269,6 +300,8 @@ export default function Record() {
     setElapsedMs(0)
     setReadyRecording(null)
     setUploadPercent(0)
+    setUploadAttempts(0)
+    setNoticeMessage('')
     setPhase('select')
   }, [recordedUrl])
 
@@ -322,6 +355,7 @@ export default function Record() {
       return
     }
     setError(null)
+    setNoticeMessage('')
     setUploadPercent(0)
     setPhase('uploading')
 
@@ -339,28 +373,42 @@ export default function Record() {
     )
     uploadHandleRef.current = handle
 
+    // ── フェーズ1: アップロード(トークン取得 + 送信) ──
+    let recordingId: string
     try {
-      const { recordingId } = await handle.promise
+      const res = await handle.promise
+      recordingId = res.recordingId
       uploadHandleRef.current = null
+    } catch (e) {
+      uploadHandleRef.current = null
+      // 中断はキャンセル操作。preview へ戻すだけ(再送回数に数えない)。
+      if (isAbortError(e)) {
+        setPhase('preview')
+        return
+      }
+      // トークン / 送信の失敗 -> 専用エラー + 再送導線(blob は保持して再録画を強要しない)。
+      // 内部メッセージは出さず白ラベル文言で固定。再送上限の判定用にカウント。
+      setUploadAttempts((n) => n + 1)
+      setPhase('upload_failed')
+      return
+    }
 
-      // TUS 完了 -> 処理待ち
-      setPhase('processing')
-      const ctrl = new AbortController()
-      processingAbortRef.current = ctrl
+    // ── フェーズ2: 準備完了待ち(動画は既にアップ済) ──
+    setPhase('processing')
+    const ctrl = new AbortController()
+    processingAbortRef.current = ctrl
+    try {
       const ready = await waitForRecordingReady(recordingId, {
         signal: ctrl.signal,
         intervalMs: 3000,
-        timeoutMs: 10 * 60_000,
+        timeoutMs: READY_TIMEOUT_MS,
       })
       processingAbortRef.current = null
 
       if (ready.status === 'error') {
-        setError(
-          `動画の処理中にエラーが発生しました。${
-            ready.error_message ? `(${ready.error_message})` : ''
-          }`,
-        )
-        setPhase('preview')
+        // 処理エラー。動画は既にアップ済のため再送はせず、ライブラリ確認の出口へ。
+        setNoticeMessage(PROCESSING_ERROR_NOTICE)
+        setPhase('await_library')
         return
       }
 
@@ -368,15 +416,22 @@ export default function Record() {
       setPhase('done')
       window.setTimeout(() => redirectAfterReady(ready), 1800)
     } catch (e) {
-      uploadHandleRef.current = null
       processingAbortRef.current = null
-      const msg = e instanceof Error ? e.message : 'アップロードに失敗しました'
-      if (/中断|Aborted/i.test(msg) || (e instanceof DOMException && e.name === 'AbortError')) {
+      // 中断はキャンセル操作。preview へ戻す。
+      if (isAbortError(e)) {
         setPhase('preview')
         return
       }
-      setError(msg)
-      setPhase('preview')
+      // タイムアウト: 「失敗」ではなく「準備中の出口」。row は processing のまま
+      // (error に書き換えない)、webhook の ready 化に委ねる。再送は出さない。
+      if (e instanceof RecordingReadyTimeoutError) {
+        setNoticeMessage(PREPARING_TIMEOUT_NOTICE)
+        setPhase('await_library')
+        return
+      }
+      // 想定外の例外も同じ出口へ寄せる(動画は既にアップ済のため再送しない)。
+      setNoticeMessage(PREPARING_TIMEOUT_NOTICE)
+      setPhase('await_library')
     }
   }, [recordedBlob, recordedUrl, mode, script, launch.appId, launch.sourceRef, redirectAfterReady])
 
@@ -396,6 +451,8 @@ export default function Record() {
 
   const scriptText = script?.content ?? ''
   const isSelfieLike = mode === 'selfie' || mode === 'selfie_mobile'
+  // 再送上限内か(初回失敗=1 から数え、MAX_UPLOAD_RETRIES 回まで再送ボタンを出す)。
+  const canRetryUpload = uploadAttempts <= MAX_UPLOAD_RETRIES
 
   const backButtonShown =
     phase !== 'recording' &&
@@ -705,6 +762,75 @@ export default function Record() {
             >
               いますぐ移動
             </button>
+          </div>
+        )}
+
+        {/* === Phase: await_library(準備待ちの出口・動画は既にアップ済) === */}
+        {phase === 'await_library' && (
+          <div className="py-10 max-w-xl mx-auto text-center">
+            <CheckCircle2 className="w-16 h-16 mx-auto text-emerald-500 mb-3" />
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">
+              アップロードは完了しました
+            </h2>
+            <p className="text-base text-gray-700 mb-6">{noticeMessage}</p>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <button
+                onClick={() => navigate('/library')}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition shadow-sm"
+              >
+                ライブラリを開く
+              </button>
+              <button
+                onClick={handleRedo}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-gray-300 text-gray-800 rounded-lg text-base font-medium hover:bg-gray-50 transition"
+              >
+                <Video className="w-5 h-5" />
+                新しく録画
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* === Phase: upload_failed(アップロード失敗・同じ blob で再送) === */}
+        {phase === 'upload_failed' && (
+          <div className="py-10 max-w-xl mx-auto text-center">
+            <div className="w-16 h-16 mx-auto mb-3 rounded-full bg-red-100 flex items-center justify-center">
+              <X className="w-9 h-9 text-red-500" />
+            </div>
+            <h2 className="text-xl sm:text-2xl font-bold text-gray-900 mb-2">
+              アップロードに失敗しました
+            </h2>
+            <p className="text-base text-gray-700 mb-6">{UPLOAD_FAILED_MESSAGE}</p>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              {canRetryUpload ? (
+                <button
+                  onClick={handleUpload}
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition shadow-sm"
+                >
+                  <UploadIcon className="w-5 h-5" />
+                  もう一度アップロード
+                </button>
+              ) : (
+                <button
+                  onClick={() => navigate('/library')}
+                  className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-lg text-base font-semibold hover:bg-emerald-700 transition shadow-sm"
+                >
+                  ライブラリで確認
+                </button>
+              )}
+              <button
+                onClick={handleRedo}
+                className="inline-flex items-center justify-center gap-2 px-6 py-3 bg-white border border-gray-300 text-gray-800 rounded-lg text-base font-medium hover:bg-gray-50 transition"
+              >
+                <RefreshCw className="w-5 h-5" />
+                録り直す
+              </button>
+            </div>
+            {!canRetryUpload && (
+              <p className="mt-4 text-sm text-gray-500">
+                何度かお試しいただけませんでした。少し時間をおいてから、ライブラリでご確認いただくか録り直してください。
+              </p>
+            )}
           </div>
         )}
       </div>
