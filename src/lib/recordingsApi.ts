@@ -43,6 +43,18 @@ export interface WaitOptions {
 }
 
 /**
+ * 準備完了の待ち受けが timeoutMs を超えた時に投げる型付きエラー。
+ * 呼び出し側が「アップロード失敗」と「準備待ちタイムアウト(動画は既にアップ済)」を
+ * 区別して扱えるようにするためのもの。中断 (AbortError) とも区別される。
+ */
+export class RecordingReadyTimeoutError extends Error {
+  constructor(message = '動画の準備がタイムアウトしました。') {
+    super(message)
+    this.name = 'RecordingReadyTimeoutError'
+  }
+}
+
+/**
  * 動画の処理完了 (status='ready' or 'error') をポーリングで待つ。
  * Webhook 経由の更新を検知する想定。
  */
@@ -76,5 +88,5 @@ export async function waitForRecordingReady(
     })
   }
 
-  throw new Error('動画の処理がタイムアウトしました。しばらくしてからライブラリで確認してください。')
+  throw new RecordingReadyTimeoutError()
 }
